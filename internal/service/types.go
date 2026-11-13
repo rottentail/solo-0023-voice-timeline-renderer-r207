@@ -5,12 +5,14 @@ import (
 	"sync"
 
 	"voice-timeline-renderer/internal/domain"
+	"voice-timeline-renderer/internal/render"
+	"voice-timeline-renderer/internal/storage"
 )
 
 type Repository interface {
 	SaveSource(domain.SourceAsset, []byte) error
 	GetSourceMeta(string) (domain.SourceAsset, error)
-	GetSource(string) (domain.SourceAsset, []byte, error)
+	OpenSource(string) (*storage.SourceReader, error)
 	SaveTimeline(domain.Timeline) error
 	GetTimeline(string) (domain.Timeline, error)
 	SaveJob(domain.RenderJob) error
@@ -20,9 +22,12 @@ type Repository interface {
 }
 
 type Config struct {
-	MaxSourceBytes  int64
-	MaxSpans        int
-	MaxOutputFrames int64
+	MaxSourceBytes     int64
+	MaxSpans           int
+	MaxOutputFrames    int64
+	PrepareCacheBytes  int64
+	PrepareBudgetBytes int64
+	ResidentBytes      int64
 }
 
 func DefaultConfig() Config {
@@ -30,12 +35,19 @@ func DefaultConfig() Config {
 		MaxSourceBytes:  32 << 20,
 		MaxSpans:        64,
 		MaxOutputFrames: 48000 * 180,
+		// Cache plus active renders stay below the 192 MiB service ceiling;
+		// the remainder covers the Go runtime and the HTTP layer. The cache
+		// ceiling is a sub-limit of the active budget, so retention and live
+		// work cannot each claim the same bytes.
+		PrepareCacheBytes:  48 << 20,
+		PrepareBudgetBytes: 112 << 20,
 	}
 }
 
 type Service struct {
 	repo   Repository
 	config Config
+	cache  *render.PrepareCache
 	mu     sync.Mutex
 }
 
@@ -50,7 +62,34 @@ func New(repo Repository, config Config) *Service {
 	if config.MaxOutputFrames <= 0 {
 		config.MaxOutputFrames = defaults.MaxOutputFrames
 	}
-	return &Service{repo: repo, config: config}
+	if config.PrepareBudgetBytes <= 0 {
+		config.PrepareBudgetBytes = defaults.PrepareBudgetBytes
+	}
+	if config.PrepareCacheBytes <= 0 {
+		config.PrepareCacheBytes = defaults.PrepareCacheBytes
+	}
+	if config.ResidentBytes <= 0 {
+		config.ResidentBytes = 192 << 20
+	}
+	if config.PrepareCacheBytes > config.PrepareBudgetBytes {
+		config.PrepareCacheBytes = config.PrepareBudgetBytes
+	}
+	budget := render.NewBudget(config.PrepareBudgetBytes)
+	return &Service{
+		repo:   repo,
+		config: config,
+		cache:  render.NewPrepareCache(budget, config.PrepareCacheBytes),
+	}
+}
+
+// PrepareStats reports live preparation reuse and the shared memory budget.
+func (s *Service) PrepareStats() render.PrepareStats {
+	return s.cache.Stats()
+}
+
+// ResidentCeiling is the documented maximum for cache plus active preparation.
+func (s *Service) ResidentCeiling() int64 {
+	return s.config.ResidentBytes
 }
 
 type SourceWriteRequest struct {

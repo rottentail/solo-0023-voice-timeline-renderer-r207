@@ -114,6 +114,13 @@ func (harness *Harness) createRender(
 		if err := decodeBody(body, &job); err != nil {
 			return domain.RenderJob{}, status, err
 		}
+		return job, status, nil
+	}
+	// A failed render answers with the error envelope, which still carries the
+	// terminal job so callers can observe the stable failure code.
+	var envelope failureEnvelope
+	if err := decodeBody(body, &envelope); err == nil && envelope.Job != nil {
+		return *envelope.Job, status, nil
 	}
 	return job, status, nil
 }

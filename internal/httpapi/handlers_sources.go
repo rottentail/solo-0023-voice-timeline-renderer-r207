@@ -10,6 +10,10 @@ func (server *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (server *Server) handlePrepareStats(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, server.service.PrepareStats())
+}
+
 func (server *Server) handleSourceWrite(w http.ResponseWriter, request *http.Request) {
 	var payload service.SourceWriteRequest
 	if err := decodeJSON(w, request, &payload, server.options.MaxSourceRequestBytes); err != nil {

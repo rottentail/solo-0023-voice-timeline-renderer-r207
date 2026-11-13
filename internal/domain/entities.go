@@ -66,8 +66,12 @@ type RenderJob struct {
 	Error         *ErrorDetail `json:"error,omitempty"`
 	Output        *OutputAsset `json:"output,omitempty"`
 	ReceiptDigest string       `json:"receipt_digest,omitempty"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	// ReusedPreparedFrames is how many prepared output frames this render
+	// served from shared conversion work instead of converting again. It is
+	// zero when the job failed before preparation completed.
+	ReusedPreparedFrames int64     `json:"reused_prepared_frames"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type ReceiptSpan struct {

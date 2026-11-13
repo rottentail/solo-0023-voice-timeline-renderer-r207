@@ -13,9 +13,14 @@ The implementation covers:
 - Equal-power neighboring-span crossfades.
 - Peak normalization into a requested dBFS target.
 - Durable render states, receipts, and atomically committed output folders.
+- Shared preparation of source intervals across renders: the exact
+  slice-then-resample-then-map result for one interval is converted once and
+  reused, while different crop edges, sample grids, and channel layouts stay
+  distinct cache identities.
 
-Automated tests are intentionally deferred. A later task stage will add unit,
-integration, and end-to-end verification around the production interfaces.
+Automated tests are intentionally deferred. Verification today runs through
+bounded production workflow checks, including a `prepare-reuse` check that
+proves prepared-interval reuse against independent full remixes.
 
 ## Requirements
 
@@ -45,6 +50,10 @@ Runtime settings are supplied through arguments:
 
 - `-addr`: HTTP listen address, default `:8093`.
 - `-data`: persistent data root, default `./var/voice-timeline`.
+- `-prepare-cache-mib`: retention ceiling for prepared intervals, default 36.
+- `-prepare-budget-mib`: shared allowance for active render working sets,
+  default 112. Cache plus active budget must stay under 192 MiB; the process
+  refuses startup settings that exceed it.
 
 No environment variable is required. Do not put credentials in the repository;
 the service does not consume any remote credential.
@@ -141,10 +150,41 @@ output folder.
 - `GET /v1/renders/{render_id}`
 - `GET /v1/renders/{render_id}/receipt`
 - `GET /v1/renders/{render_id}/output`
+- `GET /v1/preparation/stats`
 
 The output route returns `audio/wav`. The receipt records source digests, span
 placement, channel mapping, measured peak and RMS amplitude, normalization
 gain, output digest, and non-fatal warnings.
+
+## Preparation reuse
+
+Rendering the same source interval in several timelines would otherwise repeat
+the same conversion work. The service keeps prepared intervals in a shared
+cache keyed by source digest, exact half-open source frame interval, target
+sample rate, and output channel layout.
+
+- Selection happens before resampling. A whole-source conversion followed by
+  cropping has different edge samples on the target grid, so it is never used
+  as a shared answer.
+- Identical keys are converted once; concurrent callers wait for that one
+  conversion. If a caller is cancelled, its wait stops but a conversion still
+  needed by another caller continues.
+- Prepared samples are immutable. Gain, crossfade, and peak normalization
+  operate on a separate mix buffer, so final normalization never writes back
+  into reusable sound.
+- Retention is evicted least-recently-used under a cache ceiling. Eviction
+  skips entries a render still holds, so recycling cannot rewrite samples that
+  are being mixed.
+- Each render reserves an estimated working set in a shared budget before
+  allocating. When the estimate does not fit, the render fails with
+  `render_memory_limit` and publishes nothing.
+- Source bytes are verified against their recorded digest on every open. A
+  damaged file fails the render with `source_integrity_error`; an earlier
+  successful render never masks it.
+
+Observe the live counters at `GET /v1/preparation/stats` (builds, hits, waits,
+evictions, reused PCM frames, retained bytes, and budget usage). A completed
+render job also reports `reused_prepared_frames` for that execution.
 
 ## Data directory
 
@@ -187,11 +227,28 @@ Run each declared production check from the repository root:
 go run ./cmd/timelinecheck -workflow ingest-audio-source
 go run ./cmd/timelinecheck -workflow compose-timeline
 go run ./cmd/timelinecheck -workflow render-mixdown
+go run ./cmd/timelinecheck -workflow prepare-reuse -stats
 ```
 
 Each check creates an isolated temporary data directory, starts the real HTTP
 handler, sends generated WAV inputs, and verifies read-back or rendered output.
 The checks are bounded and do not require network access.
+
+The `prepare-reuse` check renders timelines through the shared cache and again
+through an independent full-source path, requiring byte-identical encoded
+output. It covers:
+
+- different crop edges by one frame, different sample grids, and different
+  channel layouts, proving each interval matches its own full remix;
+- a repeated render that performs zero new conversions;
+- a timeline whose prepared intervals are shared while different gains and
+  normalization targets still produce different, independently correct output;
+- a cancelled caller waiting on shared work without disturbing a surviving
+  caller;
+- eviction and budget pressure while a mix still reads prepared samples;
+- concurrent large renders with the resident set sampled against 192 MiB;
+- over-budget work refused with `render_memory_limit` and no published output;
+- damaged source bytes failing a repeat render with `source_integrity_error`.
 
 ## Deferred test boundary
 

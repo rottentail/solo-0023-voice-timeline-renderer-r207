@@ -45,7 +45,7 @@ func (s *Service) CreateSource(ctx context.Context, id string, request SourceWri
 		return domain.SourceAsset{}, false, getErr
 	}
 
-	clip, info, decodeErr := audiocodec.DecodeWAV(payload)
+	measurements, info, decodeErr := audiocodec.MeasureWAVPCM16Bytes(payload)
 	if decodeErr != nil {
 		return domain.SourceAsset{}, false, domain.Wrap(
 			domain.KindInvalid,
@@ -64,7 +64,6 @@ func (s *Service) CreateSource(ctx context.Context, id string, request SourceWri
 	if err := domain.ValidateSourceFacts("source", facts); err != nil {
 		return domain.SourceAsset{}, false, err
 	}
-	measurements := audiocodec.Measure(clip.Samples)
 	asset := domain.SourceAsset{
 		ID:            id,
 		Name:          request.Name,

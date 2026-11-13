@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"voice-timeline-renderer/internal/httpapi"
+	"voice-timeline-renderer/internal/render"
 	"voice-timeline-renderer/internal/service"
 	"voice-timeline-renderer/internal/storage"
 )
@@ -24,6 +25,12 @@ type Harness struct {
 }
 
 func NewHarness() (*Harness, error) {
+	return NewHarnessWithConfig(service.DefaultConfig())
+}
+
+// NewHarnessWithConfig starts the real HTTP surface with a custom service
+// configuration, so checks can exercise resource refusals and memory bounds.
+func NewHarnessWithConfig(config service.Config) (*Harness, error) {
 	tempDir, err := os.MkdirTemp("", "voice-timeline-check-*")
 	if err != nil {
 		return nil, err
@@ -33,7 +40,7 @@ func NewHarness() (*Harness, error) {
 		_ = os.RemoveAll(tempDir)
 		return nil, err
 	}
-	serviceLayer := service.New(repo, service.DefaultConfig())
+	serviceLayer := service.New(repo, config)
 	httpServer := httpapi.New(serviceLayer, httpapi.Options{
 		MaxSourceRequestBytes: 48 << 20,
 		MaxJSONBytes:          2 << 20,
@@ -45,6 +52,18 @@ func NewHarness() (*Harness, error) {
 		tempDir: tempDir,
 		server:  server,
 	}, nil
+}
+
+func (harness *Harness) prepareStats(ctx context.Context) render.PrepareStats {
+	status, body, err := harness.requestJSON(ctx, "GET", "/v1/preparation/stats", nil)
+	if err != nil || status != 200 {
+		return render.PrepareStats{}
+	}
+	var stats render.PrepareStats
+	if err := decodeBody(body, &stats); err != nil {
+		return render.PrepareStats{}
+	}
+	return stats
 }
 
 func (harness *Harness) Close() {

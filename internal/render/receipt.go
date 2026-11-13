@@ -18,11 +18,10 @@ func buildReceipt(
 	spans []preparedSpan,
 	now time.Time,
 ) (domain.RenderReceipt, domain.OutputAsset, error) {
-	decoded, info, err := audiocodec.DecodeWAV(encoded)
+	measurements, info, err := audiocodec.MeasureWAVPCM16Bytes(encoded)
 	if err != nil {
 		return domain.RenderReceipt{}, domain.OutputAsset{}, err
 	}
-	measurements := audiocodec.Measure(decoded.Samples)
 	digest := sha256.Sum256(encoded)
 	digestText := hex.EncodeToString(digest[:])
 	output := domain.OutputAsset{

@@ -10,26 +10,46 @@ import (
 
 	"voice-timeline-renderer/internal/audiocodec"
 	"voice-timeline-renderer/internal/domain"
+	"voice-timeline-renderer/internal/render"
 	"voice-timeline-renderer/internal/service"
 )
 
 func Run(ctx context.Context, workflow string) error {
+	_, err := RunWithStats(ctx, workflow)
+	return err
+}
+
+// RunWithStats executes a workflow and returns its final preparation snapshot.
+// The prepare-reuse workflow reports work actually saved, memory actually used,
+// and reuse counts from the same run that proved PCM equality.
+func RunWithStats(ctx context.Context, workflow string) (render.PrepareStats, error) {
 	harness, err := NewHarness()
 	if err != nil {
-		return err
+		return render.PrepareStats{}, err
 	}
 	defer harness.Close()
 
+	var runErr error
 	switch workflow {
 	case "ingest-audio-source":
-		return runIngest(ctx, harness)
+		runErr = runIngest(ctx, harness)
 	case "compose-timeline":
-		return runCompose(ctx, harness)
+		runErr = runCompose(ctx, harness)
 	case "render-mixdown":
-		return runRender(ctx, harness)
+		runErr = runRender(ctx, harness)
+	case "prepare-reuse":
+		var reused render.PrepareStats
+		runErr = runPrepareReuse(ctx, harness, &reused)
+		if runErr == nil {
+			return reused, nil
+		}
 	default:
-		return fmt.Errorf("unknown workflow %q", workflow)
+		runErr = fmt.Errorf("unknown workflow %q", workflow)
 	}
+	if runErr != nil {
+		return render.PrepareStats{}, runErr
+	}
+	return harness.prepareStats(ctx), nil
 }
 
 func runIngest(ctx context.Context, harness *Harness) error {

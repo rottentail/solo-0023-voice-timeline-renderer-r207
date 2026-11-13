@@ -39,6 +39,7 @@ func (server *Server) Handler() http.Handler {
 
 func (server *Server) routes() {
 	server.router.HandleFunc("GET /healthz", server.handleHealth)
+	server.router.HandleFunc("GET /v1/preparation/stats", server.handlePrepareStats)
 	server.router.HandleFunc("PUT /v1/sources/{id}", server.handleSourceWrite)
 	server.router.HandleFunc("GET /v1/sources/{id}", server.handleSourceRead)
 	server.router.HandleFunc("PUT /v1/timelines/{id}", server.handleTimelineWrite)

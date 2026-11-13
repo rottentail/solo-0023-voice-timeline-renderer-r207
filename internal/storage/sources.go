@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -55,23 +56,79 @@ func (repo *Repository) GetSourceMeta(id string) (domain.SourceAsset, error) {
 	return asset, nil
 }
 
-func (repo *Repository) GetSource(id string) (domain.SourceAsset, []byte, error) {
+// SourceReader is an immutable, digest-verified source payload. Frame ranges can
+// be read without keeping the whole source resident. Every access re-reads and
+// re-hashes the full bytes, so damaged storage bytes are reported on every use
+// rather than being masked by an earlier success.
+type SourceReader struct {
+	asset  domain.SourceAsset
+	path   string
+	handle *os.File
+	size   int64
+}
+
+func (source *SourceReader) Asset() domain.SourceAsset { return source.asset }
+
+func (source *SourceReader) Size() int64 { return source.size }
+
+func (source *SourceReader) ReadAt(target []byte, offset int64) (int, error) {
+	return source.handle.ReadAt(target, offset)
+}
+
+func (source *SourceReader) Close() error {
+	if source == nil || source.handle == nil {
+		return nil
+	}
+	return source.handle.Close()
+}
+
+// OpenSource loads source metadata, opens the media file, and verifies the
+// stored bytes against the recorded digest before the reader is returned.
+func (repo *Repository) OpenSource(id string) (*SourceReader, error) {
 	asset, err := repo.GetSourceMeta(id)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := os.Open(repo.path("sources", id, "source.wav"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, domain.E(domain.KindNotFound, "source_not_found", "source_id", "source media does not exist")
+		}
+		return nil, domain.Wrap(domain.KindInternal, "storage_error", "", "cannot open source media", err)
+	}
+	info, err := handle.Stat()
+	if err != nil {
+		_ = handle.Close()
+		return nil, domain.Wrap(domain.KindInternal, "storage_error", "", "cannot inspect source media", err)
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, handle); err != nil {
+		_ = handle.Close()
+		return nil, domain.Wrap(domain.KindInternal, "storage_error", "", "cannot verify source media", err)
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != asset.Digest {
+		_ = handle.Close()
+		return nil, domain.E(domain.KindInternal, "source_integrity_error", "source_id", "stored source digest does not match metadata")
+	}
+	return &SourceReader{
+		asset:  asset,
+		path:   repo.path("sources", id, "source.wav"),
+		handle: handle,
+		size:   info.Size(),
+	}, nil
+}
+
+// ReadSource returns the whole verified payload. It is used by callers that
+// already bound the source size, such as ingestion idempotency checks.
+func (repo *Repository) ReadSource(id string) (domain.SourceAsset, []byte, error) {
+	reader, err := repo.OpenSource(id)
 	if err != nil {
 		return domain.SourceAsset{}, nil, err
 	}
-	repo.mu.RLock()
-	payload, readErr := os.ReadFile(repo.path("sources", id, "source.wav"))
-	repo.mu.RUnlock()
-	if readErr != nil {
-		if errors.Is(readErr, os.ErrNotExist) {
-			return domain.SourceAsset{}, nil, domain.E(domain.KindNotFound, "source_not_found", "source_id", "source media does not exist")
-		}
-		return domain.SourceAsset{}, nil, domain.Wrap(domain.KindInternal, "storage_error", "", "cannot read source media", readErr)
+	defer reader.Close()
+	payload, err := io.ReadAll(io.NewSectionReader(reader, 0, reader.Size()))
+	if err != nil {
+		return domain.SourceAsset{}, nil, domain.Wrap(domain.KindInternal, "storage_error", "", "cannot read source media", err)
 	}
-	digest := sha256.Sum256(payload)
-	if hex.EncodeToString(digest[:]) != asset.Digest {
-		return domain.SourceAsset{}, nil, domain.E(domain.KindInternal, "source_integrity_error", "source_id", "stored source digest does not match metadata")
-	}
-	return asset, payload, nil
+	return reader.Asset(), payload, nil
 }

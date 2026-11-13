@@ -42,6 +42,14 @@ func normalizePeak(samples []float32, targetDBFS float64) normalizationResult {
 	}
 }
 
+// NormalizeForCheck applies the production normalization arithmetic to a caller
+// owned buffer. It exists so verification can prove normalization never
+// reaches into shared prepared samples.
+func NormalizeForCheck(samples []float32, targetDBFS float64) audiocodec.Metrics {
+	result := normalizePeak(samples, targetDBFS)
+	return result.After
+}
+
 func beforePeak(samples []float32) float64 {
 	peak := 0.0
 	for _, sample := range samples {

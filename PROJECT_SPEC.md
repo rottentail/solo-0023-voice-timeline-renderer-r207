@@ -110,13 +110,17 @@ Entry point: `PUT /v1/renders/{render_id}` with a `timeline_id` body field.
 
 1. The service creates a durable `queued` job.
 2. The renderer moves to `rendering` and loads all referenced sources.
-3. Each source interval is resampled to the timeline sample rate, mapped to the
-   requested channel layout, gain-adjusted, faded, and placed on the timeline.
-4. Overlapping neighboring spans are mixed with equal-power crossfade weights.
-5. The finalizing stage applies peak normalization to the requested target,
+3. Each source interval is selected first, then resampled to the timeline
+   sample rate and mapped to the requested channel layout. The resulting
+   prepared interval is shared between renders by exact
+   (digest, source interval, rate, channels) identity.
+4. Prepared intervals are placed on the timeline, gain-adjusted, and faded.
+5. Overlapping neighboring spans are mixed with equal-power crossfade weights
+   into a separate mix buffer; cached prepared samples are never modified.
+6. The finalizing stage applies peak normalization to the requested target,
    writes a WAV and receipt through temporary files, and renames them into
    place atomically.
-6. The job moves to `completed`. Any error records a failed terminal state and
+7. The job moves to `completed`. Any error records a failed terminal state and
    removes unpublished temporary output.
 
 Success is observable through the job resource, the downloaded WAV, and the
@@ -133,6 +137,7 @@ receipt. Failure is observable through the terminal job error code.
 - `GET /v1/renders/{id}`
 - `GET /v1/renders/{id}/receipt`
 - `GET /v1/renders/{id}/output`
+- `GET /v1/preparation/stats`
 
 Errors use a JSON envelope:
 
@@ -162,6 +167,14 @@ Errors use a JSON envelope:
 - State transitions: render jobs persist every active and terminal transition.
 - Error propagation: domain errors retain stable codes through HTTP responses.
 - Resource lifecycle: temporary files are cleaned after failed publication.
+- Shared preparation: exact source intervals are converted once and reused
+  across renders; cache entries are immutable, eviction skips pinned entries,
+  and peak normalization operates on a separate mix buffer.
+- Memory bound: retained preparation plus active render working sets share a
+  fixed budget held below the 192 MiB service ceiling; work that does not fit
+  fails with `render_memory_limit` before publishing.
+- Integrity: source bytes are re-hashed on every open, so damaged storage fails
+  the render instead of being masked by an earlier success.
 - Concurrency: storage guards indexes and registry updates; unique IDs and
   atomic renames prevent duplicate or half-visible records.
 - Validation boundaries: request size, PCM layout, timeline bounds, and gain
@@ -176,6 +189,9 @@ The runtime manifest exposes one bounded production smoke path per workflow:
   fails.
 - Render a crossfaded timeline, download the output, decode it, and match core
   receipt measurements.
+- Render repeated and edge-differing intervals, compare every output byte for
+  byte with an independent full remix, and confirm reuse counts, cancellation
+  isolation, eviction safety, memory refusal, and damaged-source detection.
 
 These checks use the real HTTP entry points and local storage. They are not a
 replacement for the test suite that the later task stage will add.
